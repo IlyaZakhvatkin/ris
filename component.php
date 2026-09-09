@@ -237,10 +237,6 @@ if ($this->StartResultCache(false, ($arParams["CACHE_GROUPS"] === "N" ? false : 
                 "LINK_IBLOCK_ID" => $arProp["LINK_IBLOCK_ID"],
                 "MULTIPLE" => $arProp["MULTIPLE"],
             );
-            // делаем статус заказа множественным
-            if ($arProp["CODE"] == 'ORDER_STATUS') {
-                $arTemp["MULTIPLE"] = 'Y';
-            }
             if ($arProp["PROPERTY_TYPE"] == "L") {
                 $arTemp['LIST_TYPE'] = $arProp['LIST_TYPE'];
                 $arrEnum = array();
@@ -351,6 +347,7 @@ foreach ($arParams["FIELD_CODE"] as $field_code) {
         case "DATE_ACTIVE_TO":
         case "DATE_CREATE":
             $field_res = true;
+            // Запоминаем значения из запроса, чтобы они не пропадали в интерфейсе
             if (is_array($value) && !empty($value)) {
                 if ($value['start'] <> '') {
                     ${$FILTER_NAME}[">=" . $field_code] = date('d.m.Y 00:00:00', strtotime($value['start']));
@@ -367,25 +364,33 @@ foreach ($arParams["FIELD_CODE"] as $field_code) {
             "LABEL" => htmlspecialcharsbx(GetMessage("IBLOCK_FIELD_" . $field_code)),
             "INPUT_NAME" => $name,
             "INPUT_VALUE" => $value,
-            "LIST" => []
+            "LIST" => is_array($value) ? $value : [] // ДУБЛИРУЕМ СЮДА ДЛЯ СТАРОГО ШАБЛОНА
         ];
+
         if ($field_code == 'DATE_CREATE') {
             $arResult["ITEMS"][$field_code]['LABEL'] = 'Дата формирования записи';
             $arResult["ITEMS"][$field_code]['USER_TYPE'] = 'DateTime';
-            if (empty($value) && !empty($preFilter)) {
+
+            // Если пользователь еще ничего не ввел, но есть preFilter (за 30 дней) — показываем дефолтные даты
+            if (empty($value['start']) && empty($value['end']) && !empty($preFilter)) {
                 foreach ($preFilter as $kpreF => $preF) {
                     if (str_contains($kpreF, 'DATE_CREATE')) {
                         if (str_contains($kpreF, '>')) {
-                            $arResult["ITEMS"][$field_code]['INPUT_VALUE']['start'] = date('d.m.Y', strtotime($preF));
+                            $dateStart = date('d.m.Y', strtotime($preF));
+                            $arResult["ITEMS"][$field_code]['INPUT_VALUE']['start'] = $dateStart;
+                            $arResult["ITEMS"][$field_code]['LIST']['start'] = $dateStart; // для шаблона
                         }
                         if (str_contains($kpreF, '<')) {
-                            $arResult["ITEMS"][$field_code]['INPUT_VALUE']['end'] = date('d.m.Y', strtotime($preF));
+                            $dateEnd = date('d.m.Y', strtotime($preF));
+                            $arResult["ITEMS"][$field_code]['INPUT_VALUE']['end'] = $dateEnd;
+                            $arResult["ITEMS"][$field_code]['LIST']['end'] = $dateEnd; // для шаблона
                         }
                     }
                 }
             }
         }
     }
+
 }
 // массив всех значений свойств типа привязка к элементу и разделу
 $arIBlocks = [];
@@ -533,9 +538,9 @@ foreach ($arResult["arrProp"] as $prop_id => $arProp) {
     }
     if ($res) {
         // делаем статус заказа множественным
-//        if ($arProp['MULTIPLE'] == 'Y') {
-//            $name .= '[]';
-//        }
+        if ($arProp['MULTIPLE'] == 'Y') {
+            $name .= '[]';
+        }
         $arResult["ITEMS"]["PROPERTY_" . $arProp["CODE"]] = [
             "ID" => $prop_id,
             "CODE" => $arProp["CODE"],
@@ -552,113 +557,126 @@ foreach ($arResult["arrProp"] as $prop_id => $arProp) {
 $prop_date = [];
 // массив с мин. и макс. значениями дат поля типа даты
 $field_date = [];
-// заполняем список значений LIST
-$list_filter = ['ACTIVE' => '', 'IBLOCK_ID' => $arParams["IBLOCK_ID"]];
-if (!empty($preFilter))
-    $list_filter = array_merge($preFilter, $list_filter);
-$rs = CIBlockElement::GetList([], $list_filter, false, false, $ibSelect);
-while ($ob = $rs->GetNextElement()) {
-    $ar = array_merge($ob->GetFields(), $ob->GetProperties());
-    foreach ($arResult["ITEMS"] as $k => $item) {
-        $key = str_replace('PROPERTY_', '', $k);
-        if (is_array($ar[$key]) && !empty($ar[$key]['PROPERTY_TYPE'])) { // свойство
-            switch ($ar[$key]['PROPERTY_TYPE']) {
-                case 'L':
-                    if (!empty($ar[$key]['VALUE']) && !array_key_exists($ar[$key]['VALUE_ENUM_ID'], $arResult["ITEMS"][$k]['LIST'])) {
-                        $arResult["ITEMS"][$k]['LIST'][$ar[$key]['VALUE_ENUM_ID']] = $ar[$key]['VALUE_ENUM'];
-                    }
-                    break;
 
-                case 'S':
-                case 'N':
-                    if (!empty($ar[$key]['VALUE']) && !array_key_exists($ar[$key]['VALUE'], $arResult["ITEMS"][$k]['LIST'])) {
-                        if ($ar[$key]['USER_TYPE'] == 'UserID') {
-                            $arUsr = CUser::GetByID($ar[$key]['VALUE'])->Fetch();
-                            $arResult["ITEMS"][$k]['LIST'][$ar[$key]['VALUE']] = $arUsr['LAST_NAME'] . ' ' . $arUsr['NAME'];
-                        } elseif ($ar[$key]['USER_TYPE'] == 'DateTime' || $ar[$key]['USER_TYPE'] == 'Date') {
-                            if (!empty($ar[$key]['VALUE'])) {
-                                $el_date = $ar[$key]['VALUE'];
-                                if (empty($prop_date[$key]['start'])) {
-                                    $prop_date[$key]['start'] = $el_date;
-                                }
-                                if (strtotime($el_date) < strtotime($prop_date[$key]['start'])) {
-                                    $prop_date[$key]['start'] = $el_date;
-                                } elseif (strtotime($el_date) > strtotime($prop_date[$key]['end'])) {
-                                    $prop_date[$key]['end'] = $el_date;
-                                }
-                            }
-                            $arResult["ITEMS"][$k]['LIST'] = (empty($arrPFV[$key])) ? $prop_date[$key] : $arrPFV[$key];
-                        } else {
-                            $arResult["ITEMS"][$k]['LIST'][$ar[$key]['VALUE']] = $ar[$key]['VALUE'];
-                        }
-                    }
-                    break;
+// =========================================================================
+// БЫСТРОЕ И БЕЗОПАСНОЕ НАПОЛНЕНИЕ ВСЕХ СПИСКОВ ВЫБОРА
+// =========================================================================
 
-                case 'E':
-                case 'G':
-                    if (!empty($ar[$key]['VALUE']) && !array_key_exists($ar[$key]['VALUE'], $arResult["ITEMS"][$k]['LIST'])) {
-                        $arResult["ITEMS"][$k]['LIST'][$ar[$key]['VALUE']] = $arIBlocks[$ar[$key]['LINK_IBLOCK_ID']][$ar[$key]['PROPERTY_TYPE']][$ar[$key]['VALUE']];
-                    }
-                    break;
-            }
-        } else // поле
-        {
-            switch ($key) {
-                case "ACTIVE_DATE":
-                case "DATE_ACTIVE_FROM":
-                case "DATE_ACTIVE_TO":
-                case "DATE_CREATE":
-                    if (!empty($ar[$key])) {
-                        $el_date = $ar[$key];
-                        if (empty($field_date[$key]['start'])) {
-                            $field_date[$key]['start'] = $el_date;
-                        }
-                        if (strtotime($el_date) < strtotime($field_date[$key]['start'])) {
-                            $field_date[$key]['start'] = $el_date;
-                        } elseif (strtotime($el_date) > strtotime($field_date[$key]['end'])) {
-                            $field_date[$key]['end'] = $el_date;
-                        }
-                    }
-                    $arResult["ITEMS"][$k]['LIST'] = (empty($arrFFV[$key])) ? $field_date[$key] : $arrFFV[$key];
-                    break;
+// 1. Быстрое заполнение Статусов заказа (ORDER_STATUS)
+if (isset($arResult["ITEMS"]["PROPERTY_ORDER_STATUS"])) {
+    // Включаем множественный выбор для визуального отображения в шаблоне
+    $arResult["ITEMS"]["PROPERTY_ORDER_STATUS"]["MULTIPLE"] = "Y";
 
-                default:
-                    if (!empty($ar[$key]) && !array_key_exists($ar[$key], $arResult["ITEMS"][$k]['LIST'])) {
-                        $arResult["ITEMS"][$k]['LIST'][$ar[$key]] = $ar[$key];
-                    }
-                    break;
-            }
+    // ДОБАВЛЯЕМ КВАДРАТНЫЕ СКОБКИ К ИМЕНИ ПОЛЯ ДЛЯ ПРАВИЛЬНОЙ ОТПРАВКИ МАССИВА
+    $arResult["ITEMS"]["PROPERTY_ORDER_STATUS"]["INPUT_NAME"] .= '[]';
 
+    // Если в урле пришел массив выбранных статусов, фиксируем его
+    $value = $arrPFV["ORDER_STATUS"];
+    $arResult["ITEMS"]["PROPERTY_ORDER_STATUS"]["INPUT_VALUE"] = $value;
+
+    // Наполняем список статусов
+    $propertyEnums = CIBlockPropertyEnum::GetList(
+        array("SORT" => "ASC", "VALUE" => "ASC"),
+        array("IBLOCK_ID" => $arParams["IBLOCK_ID"], "CODE" => "ORDER_STATUS")
+    );
+    while ($enumFields = $propertyEnums->GetNext()) {
+        $arResult["ITEMS"]["PROPERTY_ORDER_STATUS"]['LIST'][$enumFields["ID"]] = $enumFields["VALUE"];
+    }
+
+    // Правильно передаем массив выбранных статусов в финальный SQL-фильтр Битрикса
+    if (is_array($value) && !empty($value)) {
+        ${$FILTER_NAME}["PROPERTY_ORDER_STATUS"] = $value;
+    }
+}
+
+// 2. Быстрое заполнение Типов заказа (ORDER_TYPE)
+if (isset($arResult["ITEMS"]["PROPERTY_ORDER_TYPE"])) {
+    $propertyEnums = CIBlockPropertyEnum::GetList(
+        array("SORT" => "ASC", "VALUE" => "ASC"),
+        array("IBLOCK_ID" => $arParams["IBLOCK_ID"], "CODE" => "ORDER_TYPE")
+    );
+    while ($enumFields = $propertyEnums->GetNext()) {
+        $arResult["ITEMS"]["PROPERTY_ORDER_TYPE"]['LIST'][$enumFields["ID"]] = $enumFields["VALUE"];
+    }
+}
+
+// 3. ВОЗВРАЩАЕМ СПИСОК ПОЛЬЗОВАТЕЛЕЙ (ORDER_RSB)
+if (isset($arResult["ITEMS"]["PROPERTY_ORDER_RSB"])) {
+    // Если вы узнали ID группы менеджеров, можно раскомментировать строку ниже и вписать ID
+    $arUserFilter = array(
+        "ACTIVE" => "Y",
+        "GROUPS_ID" => array(5)
+    );
+
+    // Добавили SECOND_NAME в массив FIELDS, чтобы Битрикс вытащил отчество из базы данных
+    $rsUsers = CUser::GetList(($by = "last_name"), ($order = "asc"), $arUserFilter, array("FIELDS" => array("ID", "NAME", "LAST_NAME", "SECOND_NAME")));
+    while ($arUser = $rsUsers->Fetch()) {
+        // Собираем полное ФИО: Фамилия Имя Отчество
+        $fullName = trim($arUser['LAST_NAME'] . ' ' . $arUser['NAME'] . ' ' . $arUser['SECOND_NAME']);
+
+        if (!empty($fullName)) {
+            // Переводим всю строку в верхний регистр (БОЛЬШИЕ БУКВЫ) с поддержкой русского языка
+            $fullName = mb_strtoupper($fullName, 'UTF-8');
+            $arResult["ITEMS"]["PROPERTY_ORDER_RSB"]['LIST'][$arUser['ID']] = $fullName;
+        } else {
+            $arResult["ITEMS"]["PROPERTY_ORDER_RSB"]['LIST'][$arUser['ID']] = "[ID: " . $arUser['ID'] . "]";
         }
     }
 }
-// добавляем фильтр по бизнес-единицам
-if (in_array('ORDER_BIZ', $arParams["PROPERTY_CODE"])) {
 
-    if (!empty($arResult["ITEMS"]['PROPERTY_ORDER_RSB']["LIST"])) {
-        $arResult["ITEMS"]["PROPERTY_ORDER_BIZ"] = [
-            "ID" => 'ORDER_BIZ',
-            "CODE" => 'ORDER_BIZ',
-            "USER_TYPE" => '',
-            "LABEL" => 'Бизнес-единицы',
-            "INPUT_NAME" => 'ordersFilter_pf[ORDER_BIZ]',
-            "INPUT_VALUE" => '',
-            "MULTIPLE" => 'N',
-            "LIST" => []
-        ];
-        $rsSectBiz = CIBlockSection::GetList(['NAME' => 'ASC'], ['IBLOCK_ID' => 26], false, ['ID', 'NAME']);
-        while ($arSectBiz = $rsSectBiz->Fetch()) {
-            $arResult["ITEMS"]["PROPERTY_ORDER_BIZ"]['LIST'][$arSectBiz['ID']] = $arSectBiz['NAME'];
+// 4. ВОЗВРАЩАЕМ СПИСОК БИЗНЕС-ЕДИНИЦ (ORDER_BIZ)
+$arBizFieldStructure = [
+    "ID" => 'ORDER_BIZ',
+    "CODE" => 'ORDER_BIZ',
+    "USER_TYPE" => '',
+    "LABEL" => 'Бизнес-единицы',
+    "INPUT_NAME" => 'ordersFilter_pf[ORDER_BIZ]',
+    "INPUT_VALUE" => $arrPFV['ORDER_BIZ'] ?? '',
+    "MULTIPLE" => 'N',
+    "LIST" => []
+];
+
+// 1. Моментально собираем ВСЕ папки из инфоблока №26 (включая неактивную Ааль Е.А.)
+$rsSectBiz = CIBlockSection::GetList(
+    ['NAME' => 'ASC'],
+    ['IBLOCK_ID' => 26, 'GLOBAL_ACTIVE' => 'All'],
+    false,
+    ['ID', 'NAME']
+);
+while ($arSectBiz = $rsSectBiz->Fetch()) {
+    $arBizFieldStructure['LIST'][$arSectBiz['ID']] = $arSectBiz['NAME'];
+}
+
+// Записываем данные в оба ключа для абсолютной совместимости с версткой
+$arResult["ITEMS"]["PROPERTY_ORDER_BIZ"] = $arBizFieldStructure;
+$arResult["ITEMS"]["ORDER_BIZ"] = $arBizFieldStructure;
+
+
+// 2. Если менеджер выбрал конкретную бизнес-единицу в селекте
+if (!empty($arrPFV['ORDER_BIZ'])) {
+    $rsbID = [];
+
+    // Находим риелторов внутри выбранного раздела (даже если у папки активность = "Нет")
+    $arBizFilter = [
+        'IBLOCK_ID' => 26,
+        'SECTION_ID' => $arrPFV['ORDER_BIZ'],
+        'INCLUDE_SUBSECTIONS' => 'Y',
+        'SECTION_GLOBAL_ACTIVE' => 'N'
+    ];
+
+    $rsBiz = CIBlockElement::GetList([], $arBizFilter, false, false, ['PROPERTY_BIZ_REALTOR']);
+    while ($arBiz = $rsBiz->Fetch()) {
+        if (!empty($arBiz['PROPERTY_BIZ_REALTOR_VALUE'])) {
+            $rsbID[] = $arBiz['PROPERTY_BIZ_REALTOR_VALUE'];
         }
-        if (!empty($arrPFV['ORDER_BIZ'])) {
-            $arResult["ITEMS"]["PROPERTY_ORDER_BIZ"]['INPUT_VALUE'] = $arrPFV['ORDER_BIZ'];
-            $rsbID = [];
-            $rsBiz = CIBlockElement::GetList([], ['IBLOCK_ID' => 26, 'IBLOCK_SECTION_ID' => $arrPFV['ORDER_BIZ']], false, false, ['PROPERTY_BIZ_REALTOR']);
-            while ($arBiz = $rsBiz->Fetch()) {
-                $rsbID[] = $arBiz['PROPERTY_BIZ_REALTOR_VALUE'];
-            }
-            ${$FILTER_NAME}["PROPERTY_ORDER_RSB"] = $rsbID;
-        }
+    }
+
+    // Передаем массив ID найденных сотрудников в финальный SQL-запрос заказов
+    if (!empty($rsbID)) {
+        ${$FILTER_NAME}["PROPERTY_ORDER_RSB"] = $rsbID;
+    } else {
+        // Если папка пустая, ставим 0 результатов, чтобы не вывалились чужие заказы
+        ${$FILTER_NAME}["PROPERTY_ORDER_RSB"] = 0;
     }
 }
 
